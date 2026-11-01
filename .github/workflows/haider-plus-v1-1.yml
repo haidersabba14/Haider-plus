@@ -1,0 +1,343 @@
+name: Haider Plus v1.1 Update
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/haider-plus-v1-1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        shell: bash
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+
+      - name: Generate Haider Plus iOS app
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p Sources
+          cat > Sources/HaiderPlusApp.swift <<'SWIFT'
+          import SwiftUI
+          import UIKit
+
+          struct PlusApp: Identifiable, Decodable {
+              let id: String
+              let name: String
+              let subtitle: String
+              let category: String
+              let icon: String
+              let install_type: String
+              let install_url: String
+          }
+
+          struct RemoteCatalog: Decodable {
+              let catalog_version: Int
+              let apps: [PlusApp]
+          }
+
+          @MainActor
+          final class CatalogStore: ObservableObject {
+              @Published var apps: [PlusApp] = [
+                  PlusApp(id: "eight-ball-pool", name: "8 Ball Pool (نسخة معدلة)",
+                          subtitle: "بانتظار رابط توزيع موقّع ومصرّح به", category: "ألعاب",
+                          icon: "8.circle.fill", install_type: "manifest", install_url: ""),
+                  PlusApp(id: "github", name: "GitHub", subtitle: "منصة المشاريع",
+                          category: "مواقع", icon: "chevron.left.forwardslash.chevron.right",
+                          install_type: "web", install_url: "https://github.com")
+              ]
+              @Published var status = "الكتالوج المحلي"
+              @Published var loading = false
+
+              // Update apps.json in this public repository to update the store catalog.
+              private let catalogURL = "https://raw.githubusercontent.com/haidersabba14/Haider-plus/main/apps.json"
+
+              func refresh() async {
+                  guard !loading, let url = URL(string: catalogURL) else { return }
+                  loading = true
+                  defer { loading = false }
+                  do {
+                      var request = URLRequest(url: url)
+                      request.timeoutInterval = 15
+                      request.cachePolicy = .reloadIgnoringLocalCacheData
+                      let (data, response) = try await URLSession.shared.data(for: request)
+                      guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                          status = "تعذّر جلب التحديث: تحقق من وجود apps.json"
+                          return
+                      }
+                      let catalog = try JSONDecoder().decode(RemoteCatalog.self, from: data)
+                      guard !catalog.apps.isEmpty else {
+                          status = "الملف فارغ: تُعرض القائمة السابقة"
+                          return
+                      }
+                      apps = catalog.apps
+                      status = "تم تحديث القائمة من GitHub"
+                  } catch {
+                      status = "تعذّر التحديث: تُعرض القائمة المحفوظة"
+                  }
+              }
+          }
+
+          @main
+          struct HaiderPlusApp: App {
+              var body: some Scene {
+                  WindowGroup {
+                      StoreView()
+                          .preferredColorScheme(.dark)
+                          .environment(\.layoutDirection, .rightToLeft)
+                  }
+              }
+          }
+
+          struct StoreView: View {
+              @StateObject private var catalog = CatalogStore()
+              @State private var search = ""
+              @State private var selectedCategory = "الكل"
+              @State private var showAlert = false
+              @State private var alertMessage = ""
+
+              private let gold = Color(red: 0.94, green: 0.74, blue: 0.32)
+              private let panel = Color(red: 0.11, green: 0.11, blue: 0.13)
+
+              private var categories: [String] {
+                  ["الكل"] + Array(Set(catalog.apps.map(\.category))).sorted()
+              }
+
+              private var visibleApps: [PlusApp] {
+                  catalog.apps.filter { app in
+                      (selectedCategory == "الكل" || app.category == selectedCategory) &&
+                      (search.isEmpty ||
+                       app.name.localizedCaseInsensitiveContains(search) ||
+                       app.subtitle.localizedCaseInsensitiveContains(search))
+                  }
+              }
+
+              private func manifestLink(for app: PlusApp) -> URL? {
+                  guard app.install_type == "manifest",
+                        let url = URL(string: app.install_url),
+                        url.scheme?.lowercased() == "https",
+                        url.pathExtension.lowercased() == "plist" else { return nil }
+                  return url
+              }
+
+              private func isReady(_ app: PlusApp) -> Bool {
+                  if app.install_type == "web" {
+                      return URL(string: app.install_url)?.scheme?.lowercased() == "https"
+                  }
+                  return manifestLink(for: app) != nil
+              }
+
+              private func show(_ message: String) {
+                  alertMessage = message
+                  showAlert = true
+              }
+
+              private func open(_ app: PlusApp) {
+                  guard isReady(app) else {
+                      show("لا يوجد رابط توزيع صالح لهذا التطبيق. أضف رابط manifest.plist مع نسخة موقّعة ومصرّح بها.")
+                      return
+                  }
+
+                  let target: URL?
+                  if app.install_type == "web" {
+                      target = URL(string: app.install_url)
+                  } else if let manifest = manifestLink(for: app) {
+                      var components = URLComponents()
+                      components.scheme = "itms-services"
+                      components.host = ""
+                      components.queryItems = [
+                          URLQueryItem(name: "action", value: "download-manifest"),
+                          URLQueryItem(name: "url", value: manifest.absoluteString)
+                      ]
+                      target = components.url
+                  } else {
+                      target = nil
+                  }
+
+                  guard let target else {
+                      show("تعذّر إنشاء رابط التثبيت.")
+                      return
+                  }
+                  UIApplication.shared.open(target, options: [:]) { success in
+                      if !success {
+                          DispatchQueue.main.async {
+                              show("تعذّر فتح رابط التثبيت على هذا الجهاز.")
+                          }
+                      }
+                  }
+              }
+
+              var body: some View {
+                  ZStack {
+                      Color(red: 0.035, green: 0.035, blue: 0.045).ignoresSafeArea()
+                      ScrollView {
+                          VStack(alignment: .leading, spacing: 22) {
+                              HStack(spacing: 12) {
+                                  Image(systemName: "crown.fill")
+                                      .font(.system(size: 36))
+                                      .foregroundColor(gold)
+                                  VStack(alignment: .leading, spacing: 4) {
+                                      Text("HAIDER PLUS")
+                                          .font(.system(size: 26, weight: .black))
+                                          .foregroundColor(gold)
+                                      Text("متجر التطبيقات")
+                                          .foregroundColor(.gray)
+                                  }
+                                  Spacer()
+                              }
+
+                              HStack(spacing: 10) {
+                                  Image(systemName: "magnifyingglass")
+                                      .foregroundColor(gold)
+                                  TextField("ابحث عن تطبيق أو لعبة", text: $search)
+                                      .autocorrectionDisabled(true)
+                              }
+                              .padding(15)
+                              .background(panel)
+                              .cornerRadius(16)
+
+                              ScrollView(.horizontal, showsIndicators: false) {
+                                  HStack(spacing: 8) {
+                                      ForEach(categories, id: \.self) { group in
+                                          Button {
+                                              selectedCategory = group
+                                          } label: {
+                                              Text(group)
+                                                  .font(.subheadline.bold())
+                                                  .foregroundColor(selectedCategory == group ? .black : .white)
+                                                  .padding(.horizontal, 17)
+                                                  .padding(.vertical, 10)
+                                                  .background(selectedCategory == group ? gold : panel)
+                                                  .cornerRadius(20)
+                                          }
+                                      }
+                                  }
+                              }
+
+                              HStack(spacing: 10) {
+                                  Text(catalog.status)
+                                      .font(.caption)
+                                      .foregroundColor(.gray)
+                                  Spacer()
+                                  Button {
+                                      Task { await catalog.refresh() }
+                                  } label: {
+                                      Label("تحديث", systemImage: "arrow.clockwise")
+                                          .font(.caption.bold())
+                                          .foregroundColor(gold)
+                                  }
+                                  .disabled(catalog.loading)
+                              }
+
+                              ForEach(visibleApps) { app in
+                                  HStack(spacing: 12) {
+                                      Image(systemName: app.icon)
+                                          .font(.system(size: 26))
+                                          .foregroundColor(gold)
+                                          .frame(width: 56, height: 56)
+                                          .background(Color.black.opacity(0.35))
+                                          .cornerRadius(14)
+                                      VStack(alignment: .leading, spacing: 5) {
+                                          Text(app.name).font(.headline)
+                                          Text(app.subtitle)
+                                              .font(.caption)
+                                              .foregroundColor(.gray)
+                                              .fixedSize(horizontal: false, vertical: true)
+                                      }
+                                      Spacer(minLength: 0)
+                                      Button { open(app) } label: {
+                                          Text(app.install_type == "web" ? "فتح" : (isReady(app) ? "تثبيت" : "غير جاهز"))
+                                              .font(.caption.bold())
+                                              .foregroundColor(.black)
+                                              .padding(.horizontal, 13)
+                                              .padding(.vertical, 11)
+                                              .background(gold)
+                                              .cornerRadius(11)
+                                      }
+                                  }
+                                  .padding(14)
+                                  .background(panel)
+                                  .cornerRadius(18)
+                              }
+
+                              Text("Haider Plus • 1.1 • GitHub Updates")
+                                  .font(.caption2)
+                                  .foregroundColor(.gray)
+                                  .frame(maxWidth: .infinity)
+                          }
+                          .padding(20)
+                      }
+                  }
+                  .task { await catalog.refresh() }
+                  .alert("Haider Plus", isPresented: $showAlert) {
+                      Button("حسنًا", role: .cancel) { }
+                  } message: {
+                      Text(alertMessage)
+                  }
+              }
+          }
+          SWIFT
+
+          cat > project.yml <<'PROJECT'
+          name: HaiderPlus
+          options:
+            deploymentTarget:
+              iOS: '15.0'
+          targets:
+            HaiderPlus:
+              type: application
+              platform: iOS
+              sources:
+                - Sources
+              settings:
+                base:
+                  PRODUCT_BUNDLE_IDENTIFIER: com.haiderplus.store
+                  SWIFT_VERSION: '5.0'
+                  TARGETED_DEVICE_FAMILY: '1,2'
+                  CODE_SIGNING_ALLOWED: 'NO'
+              info:
+                path: Sources/Info.plist
+                properties:
+                  CFBundleDisplayName: Haider Plus
+                  CFBundleShortVersionString: '1.1.0'
+                  CFBundleVersion: '2'
+                  UILaunchScreen: {}
+          PROJECT
+
+          xcodegen generate --spec project.yml
+
+      - name: Build unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project HaiderPlus.xcodeproj \
+            -scheme HaiderPlus \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath output \
+            CODE_SIGNING_ALLOWED=NO build
+          mkdir -p Payload
+          cp -R output/Build/Products/Release-iphoneos/HaiderPlus.app Payload/
+          codesign --force --deep --sign - --timestamp=none Payload/HaiderPlus.app
+          zip -qry HaiderPlus-unsigned.ipa Payload
+          test -s HaiderPlus-unsigned.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HaiderPlus-v1.1-IPA
+          path: HaiderPlus-unsigned.ipa
+          retention-days: 7
