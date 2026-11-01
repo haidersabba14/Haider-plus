@@ -1,0 +1,32 @@
+{
+  "catalog_version": 1,
+  "apps": [
+    {
+      "id": "eight-ball-pool",
+      "name": "8 Ball Pool (نسخة معدلة)",
+      "subtitle": "بانتظار رابط توزيع موقّع ومصرّح به",
+      "category": "ألعاب",
+      "icon": "8.circle.fill",
+      "install_type": "manifest",
+      "install_url": ""
+    },
+    {
+      "id": "haider-tools",
+      "name": "Haider Tools",
+      "subtitle": "تطبيق تجريبي",
+      "category": "تطبيقات",
+      "icon": "wrench.and.screwdriver.fill",
+      "install_type": "manifest",
+      "install_url": ""
+    },
+    {
+      "id": "github",
+      "name": "GitHub",
+      "subtitle": "إدارة مشاريع البرمجة",
+      "category": "مواقع",
+      "icon": "chevron.left.forwardslash.chevron.right",
+      "install_type": "web",
+      "install_url": "https://github.com"
+    }
+  ]
+}
